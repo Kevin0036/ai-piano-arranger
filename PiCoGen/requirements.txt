@@ -1,0 +1,18 @@
+torch
+torchaudio
+omegaconf
+joblib
+yt-dlp
+questionary
+termcolor
+transformers
+pyrubberband
+synctoolbox
+miditoolkit
+sheetsage @ git+https://github.com/chenkigba/PiCoGen-sheetsage.git
+beat_this @ git+https://github.com/chenkigba/beat_this.git
+madmom @ git+https://github.com/chenkigba/madmom.git
+mpi4py
+piano_transcription_inference
+# demucs @ git+https://github.com/tanchihpin0517/mirtoolkit_demucs.git@mirtoolkit
+# mirtoolkit @ git+https://github.com/tanchihpin0517/mirtoolkit.git@v0.1.0

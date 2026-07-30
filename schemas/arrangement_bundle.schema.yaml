@@ -1,0 +1,19 @@
+bundle_version: 1
+required_paths:
+  - source/song_audio.mp3
+  - source/metadata.yaml
+  - arrangement/score/source.pdf
+  - arrangement/render/piano_clean.wav
+  - qc/quality_report.yaml
+required_metadata:
+  - song_id
+  - singer
+  - track_title
+  - arranger
+  - source_duration_sec
+  - version_match
+  - target_tier
+optional_paths:
+  - arrangement/score/master.musicxml
+  - arrangement/score/pages
+  - arrangement/symbolic/optional.mid

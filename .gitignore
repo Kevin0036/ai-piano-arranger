@@ -10,6 +10,8 @@ build/
 .env.local
 *.conda
 miniconda3/
+.venv/
+.claude/worktrees/
 
 # Inference output
 output/*.mid
@@ -29,3 +31,12 @@ Thumbs.db
 **/.cache/jukebox/
 **/.sheetsage/
 **/.cache/picogen2/
+
+# Private local assets and experiment outputs
+assets/raw/
+dataset/bundles/
+dataset/manifests/*.csv
+dataset/reports/
+models/
+checkpoints/
+third_party/homr/

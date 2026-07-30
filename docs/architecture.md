@@ -1,163 +1,275 @@
-# Architecture
+# Architecture（2026-07-30）
 
-## System Overview
+> 旧版架构文档已归档到 `docs/archive/2026-07-30-reset/architecture-pre-reset.md`。  
+> 当前架构以 `ArrangementBundle` 和多视角对齐为中心，不再以 `SheetSage + MIDI-only` 为前提。
 
-The system extends PiCoGen2 (Foundation Model) with lightweight Adapters that modify generated output toward a specific Style, Domain, or user Preference. The Foundation Model stays frozen; only Adapter parameters are trained.
+## 1. System Overview
 
-```
-               Foundation Model (PiCoGen2)
+新的系统不再把“原曲音频输入、MIDI 输出”视作唯一主轴，而是把每个改编样本组织成一个多视角 bundle，然后在 bundle 内外建立对齐和条件。
 
-Audio ─────────────────────────────► Standard MIDI
-                                         │
-                                    [Adapter]
-                                         │
-                    ┌────────────────────┼────────────────────┐
-                    │                    │                    │
-               Domain              Style              Preference
-               Adapter             Adapter             Adapter
-                    │                    │                    │
-                    └────────────────────┼────────────────────┘
-                                         ▼
-                              Personalised Standard MIDI
-                                         │
-                                   [Post-processing]
-                                         ▼
-                              MusicXML / PDF / Audio
-```
-
-## Pipeline
-
-```
-Audio ──► Beat Detection ──► SheetSage Feature Extraction ──► PiCoGen Decoder ──► Event Sequence ──► Standard MIDI
-           (beat_this)          (melody + harmony embs)          (+ Adapter)           (tokenizer)          (MIDI file)
-```
-
-### Components
-
-| Step | Component | Output | Notes |
-|------|-----------|--------|-------|
-| 1 | `beat_this` | Beat/downbeat timestamps | Required by SheetSage |
-| 2 | `sheetsage` | Melody & harmony embeddings | Feature extractor, frozen |
-| 3 | `picogen2.PiCoGenDecoder` | Token event sequence | Decoder, frozen during inference; Adapter attached here |
-| 4 | `picogen2.Tokenizer` | Standard MIDI | Converts event tokens to MIDI file |
-| 5 | Post-processing | MusicXML / PDF / Audio | MuseScore for notation, fluid synth for audio |
-
-## Three Learning Layers
-
-### Layer 1 — Domain
-What "typical" arrangements sound like for a music category.
-- *Data*: ~20 paired samples from the same Domain (e.g., JPOP)
-- *Training target*: Domain-specific Adapter
-- *Switch cost*: Load different Domain Adapter
-
-### Layer 2 — Style
-What a specific arranger's creative habits look like.
-- *Data*: ~20 paired samples from one arranger (e.g., Animenz)
-- *Training target*: Style-specific Adapter
-- *Switch cost*: Load different Style Adapter
-
-### Layer 3 — Preference
-What a specific user tends to like.
-- *Data*: Implicit from user's selection history (preferred version A over B)
-- *Training target*: Personal Preference Adapter
-- *Learning mode*: Continuous, accumulates over time
-
-```
-General Music ──► JPOP ──► Animenz ──► Kevin's preferred Animenz style
-                                          (increasing specificity)
+```text
+                  Source Side
+          ┌─────────────────────────┐
+          │   original song audio   │
+          └────────────┬────────────┘
+                       │
+             source encoder benchmark
+          (MERT / MuQ / MusicFM / ...)
+                       │
+                       ▼
+               source representation
+                       │
+                       ▼
+                 conditioning builder
+                       ▲
+                       │
+        ┌──────────────┼─────────────────┐
+        │              │                 │
+        │              │                 │
+        ▼              ▼                 ▼
+  score representation  render-audio rep  optional symbolic rep
+ (MusicXML / score tok) (clean piano wav) (MIDI / event tokens)
+        ▲              ▲                 ▲
+        │              │                 │
+        └──────────────┴─────────────────┘
+                    ArrangementBundle
+                       │
+                       ▼
+               cross-view alignment
+                       │
+                       ▼
+                baseline generator
+             (short-term: PiCoGen2)
+                       │
+                       ▼
+                arrangement package
+      (score / render audio / optional MIDI / metadata)
 ```
 
-## Data Format
+## 2. Canonical Sample Unit
 
-### Paired Training Sample
+### `ArrangementBundle`
 
-```
-Input:  original audio file (any common format: mp3, wav, flac)
-Target: Standard MIDI file (.mid)
-```
+当前系统中的标准数据单元定义为：
 
-### Directory Structure
-
-```
-data/
-└── {adapter-name}/
-    ├── sample_001/
-    │   ├── audio.mp3
-    │   └── piano.mid
-    ├── sample_002/
-    │   ├── audio.mp3
-    │   └── piano.mid
-    └── ...
-```
-
-## Training Flow
-
-```
-Original Audio
-      │
-      ▼
-Foundation Model (frozen)
-      │
-      ├── beats + downbeats (beat_this)
-      ├── melody/harmony embeddings (sheetsage)
-      └── token events (decoder)
-              │
-              ▼
-      Compare with Target MIDI events
-              │
-              ▼
-      Compute Loss → Update Adapter only
+```text
+bundle/
+  source/
+    song_audio.mp3
+    metadata.yaml
+  arrangement/
+    score/
+      master.musicxml
+      source.pdf
+      pages/
+    render/
+      piano_clean.wav
+    symbolic/
+      optional.mid
+    align/
+      audio_to_render.json
+      score_to_render.json
+  qc/
+    quality_report.yaml
 ```
 
-- Foundation Model remains **frozen** throughout
-- Only Adapter parameters are updated
-- Prevents catastrophic forgetting of general arrangement capability
+### Bootstrap note
 
-## Inference Flow
+For the current repo bootstrap, canonical raw assets live under `assets/raw/` (`songs/`, `sheets/`, `piano_mp3/`).
+Phase 1 reference bundles under `dataset/bundles/` are allowed to symlink back to the source song and score assets while normalizing the arrangement render into bundle-local `piano_clean.wav`.
 
-```
-Audio ──► Foundation Model + Adapter ──► Personalised Standard MIDI
-```
+### Canonical priority
 
-- Switch Adapter = switch Style, no other changes
-- Storage per Adapter is minimal (only delta parameters)
-- Adapters are shareable between users
+1. `score-native` assets are first-class truth when available.
+2. `render-audio` is the main perceptual bridge between notation and listening.
+3. `symbolic-derived` assets are useful but not authoritative by default.
 
-## Development Roadmap
+## 3. Core Architectural Decisions
 
-### Phase 1 — Familiarise with PiCoGen2 (current)
-- [ ] Set up Conda environment (`conda create -n picogen2 python=3.10`)
-- [ ] Install dependencies (`pip install -r requirements.txt`)
-- [ ] Run `python demo.py` with a test audio file
-- [ ] Understand input/output format through Python API
-- [ ] Read training code (`train.py`, `preprocess.py`, `dataset.py`)
+### 3.1 Score-native first
 
-### Phase 2 — Build Personal Dataset
-- [ ] Choose target arranger (e.g., Animenz)
-- [ ] Collect ~20 paired samples (original audio + piano MIDI)
-- [ ] Build data preprocessing tools
-- [ ] Validate data format compatibility with PiCoGen2
+MusicXML, source PDF, and page images remain preserved throughout the pipeline.  
+The system should avoid collapsing all supervision into MIDI at ingestion time.
 
-### Phase 3 — Train First Adapter
-- [ ] Implement Adapter training loop
-- [ ] Experiment with hyperparameters
-- [ ] Compare generated output before/after Adapter
-- [ ] Verify style transfer is audible and consistent
+### 3.2 Render audio is a bridge, not a byproduct
 
-### Phase 4 — Establish Full Workflow
-- [ ] Automated data pipeline
-- [ ] One-click training
-- [ ] Automated Adapter loading and inference
-- [ ] Automated MIDI → PDF/audio export
+The clean piano render generated from the score is valuable because it:
 
-### Phase 5 — UI & UX
-- [ ] GUI for training and inference
-- [ ] Adapter management
-- [ ] Parameter configuration
-- [ ] Logging and monitoring
+- makes audio-domain alignment easier
+- creates a controllable acoustic proxy of the arrangement
+- lets source-audio encoders and arrangement-audio encoders meet in a comparable space
 
-### Phase 6 — Continuous Improvement
-- [ ] More music Domains
-- [ ] Adapter composition / stacking
-- [ ] Better training methods
-- [ ] Performance optimisation
+### 3.3 OMR / AMT are helper modules only
+
+OMR, AMT, and audio-to-MIDI tools may populate missing views or support validation, but they are not the canonical representation layer.
+
+### 3.4 Generator replacement is deferred
+
+The first reset milestone does not require inventing a new generator immediately.  
+`PiCoGen2` remains the short-term baseline so the team can isolate whether the real gains come from better representations and conditioning.
+
+## 4. Main Layers
+
+### 4.1 Source Audio Encoder Layer
+
+Responsibility:
+- encode the original song
+- provide structural, rhythmic, semantic, and stylistic representations
+
+Current benchmark candidates:
+- `MERT`
+- `MuQ`
+- `MusicFM`
+
+Output:
+- frame/segment embeddings
+- optional pooled section-level descriptors
+- optional retrieval/indexing vectors
+
+### 4.2 Score Representation Layer
+
+Responsibility:
+- parse native score assets
+- expose notation-aware features without flattening them too early
+
+Possible representations:
+- MusicXML object graph
+- score tokens
+- page/layout anchors
+- staff/voice/measure metadata
+
+Output:
+- notation-level tokens
+- structural annotations
+- render anchors for alignment
+
+### 4.3 Render Audio Representation Layer
+
+Responsibility:
+- encode the clean piano render as an acoustic view of the arrangement
+
+Why this matters:
+- it is much closer to the source audio modality than raw notation
+- it avoids some of the ambiguity of direct source-audio to score alignment
+
+Output:
+- acoustic embeddings
+- onset/beat/section descriptors
+- alignment anchors
+
+### 4.4 Optional Symbolic Layer
+
+Responsibility:
+- provide event-based representations needed for legacy training paths or compatible generators
+
+Examples:
+- Standard MIDI
+- note event sequences
+- tokenizer events for `PiCoGen2`
+
+Constraint:
+- this layer is derived and replaceable; it is no longer the sole center of the architecture
+
+### 4.5 Cross-View Alignment Layer
+
+Responsibility:
+- align source audio with arrangement render
+- align arrangement render with arrangement score
+- map sections, motifs, and harmonic regions across representations
+
+Outputs may include:
+- timestamp mappings
+- section correspondences
+- note-to-frame or measure-to-frame anchors
+- confidence and QC metadata
+
+This is the layer that makes the three user-collectible resources jointly useful instead of merely co-existing on disk.
+
+### 4.6 Conditioning Builder
+
+Responsibility:
+- construct model-ready conditions from all available views
+
+Condition families:
+- content condition from the source song
+- style condition from arrangement clusters or arranger identity
+- controllability condition for difficulty, density, mood, playability
+- preference condition from user feedback signals
+
+Key design goal:
+- keep this interface stable even if the downstream generator changes
+
+### 4.7 Generator Layer
+
+Short-term role:
+- validate that the new conditioning pipeline can drive usable arrangement generation
+
+Short-term baseline:
+- `PiCoGen2` with a compatibility adapter if needed
+
+Medium-term options:
+- a better event generator
+- a score-aware generator
+- a retrieval-augmented editing workflow
+
+### 4.8 Preference / Ranking Layer
+
+Responsibility:
+- learn from user choices without forcing every preference signal into the base generator weights
+
+Candidate mechanisms:
+- reranking
+- lightweight adapters
+- reward/preference modeling
+
+This layer remains explicitly open until the new data core is stable.
+
+## 5. Output Contract
+
+The architectural output is no longer “just MIDI”.
+
+The desired arrangement package can include:
+- score artifacts
+- rendered piano audio
+- symbolic event export
+- metadata and confidence traces
+
+That output contract better matches how users actually consume and edit arrangements.
+
+## 6. Evaluation Surface
+
+The new architecture should be evaluated across four surfaces:
+
+1. Representation quality
+   - structure capture
+   - style separability
+   - cross-song retrieval usefulness
+2. Alignment quality
+   - source-to-render alignment
+   - render-to-score alignment
+   - QC confidence stability
+3. Generation quality
+   - musicality
+   - playability
+   - notation quality
+4. Personalisation quality
+   - style controllability
+   - preference satisfaction
+   - consistency over repeated use
+
+## 7. Archived Assumptions
+
+The following assumptions from the pre-reset architecture are no longer active:
+
+1. `SheetSage + Jukebox` is the core understanding frontend.
+2. Standard MIDI is the sole canonical output and supervision target.
+3. `(audio, midi)` pairs are the complete data definition.
+4. The main path forward is to distill new features back into the old SheetSage interface.
+
+## 8. Pending Decisions
+
+The architecture is active, but three decisions are intentionally left open until the next benchmark round:
+
+1. Which source encoder becomes the mainline default
+2. Which score representation becomes canonical inside the pipeline
+3. Whether personalization first lands in conditioning, reranking, or lightweight adaptation

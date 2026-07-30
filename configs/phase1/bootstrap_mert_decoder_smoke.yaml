@@ -1,0 +1,47 @@
+dataset:
+  manifest_path: dataset/manifests/phase1_jpop_single_artist.csv
+  bundle_root: dataset/bundles
+  bundle_ids:
+    - song_001
+    - song_002
+    - song_003
+  feature_tag: mert_v1_330m
+  alignment_filename: audio_to_render.bootstrap.json
+
+audio_encoder:
+  backend: hf_mert
+  model_name_or_path: models/mert-v1-330m
+  sample_rate: 24000
+  pool_seconds: 0.5
+  max_steps: 512
+  inference_chunk_seconds: 15.0
+  local_files_only: true
+  trust_remote_code: true
+  device: cuda:0
+
+model:
+  d_model: 512
+  hidden_dim: 1024
+  dropout: 0.1
+
+training:
+  checkpoint_dir: checkpoints/phase1/bootstrap_mert_decoder_smoke
+  seed: 1234
+  device: cuda:0
+  epochs: 1
+  batch_size: 1
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  alignment_weight: 1.0
+  global_weight: 0.25
+  variance_weight: 0.1
+  covariance_weight: 0.01
+
+decoder:
+  enabled: true
+  use_pretrained: false
+  picogen_root: third_party/picogen2
+  config_file: third_party/picogen2/assets/config.json
+  checkpoint_file: ""
+  max_seq_len: 1024
+  bos_token_id: 1
